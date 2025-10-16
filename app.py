@@ -11,7 +11,7 @@ CORS(app)  # ✅ Allow API access from frontend
 OPENROUTER_API_KEY = "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"
 
 # --- Load Product Details from CSV ---
-PRODUCTS_FILE = "products.csv"
+PRODUCTS_FILE = "product.csv"
 if os.path.exists(PRODUCTS_FILE):
     try:
         products_df = pd.read_csv(PRODUCTS_FILE)
@@ -115,3 +115,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=True)
+
