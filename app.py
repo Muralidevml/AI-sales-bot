@@ -5,63 +5,65 @@ import pandas as pd
 import os
 
 app = Flask(__name__)
-CORS(app)  # ✅ Allow frontend & API calls from any origin
+CORS(app)  # ✅ Allow API access from frontend
 
 # --- OpenRouter API Key ---
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 
-# --- Load Products from CSV ---
+# --- Load Product Details from CSV ---
 PRODUCTS_FILE = "products.csv"
 if os.path.exists(PRODUCTS_FILE):
-    products_df = pd.read_csv(PRODUCTS_FILE)
+    try:
+        products_df = pd.read_csv(PRODUCTS_FILE)
+        products_df = products_df.fillna("")  # Avoid NaN issues
+    except Exception as e:
+        print("Error reading CSV:", e)
+        products_df = pd.DataFrame(columns=["name", "price", "description"])
 else:
-    products_df = pd.DataFrame([
-        {"name": "Gold Necklace", "price": 15000, "description": "22K gold necklace with elegant design"},
-        {"name": "Diamond Ring", "price": 25000, "description": "Sparkling diamond ring with 18K white gold"},
-        {"name": "Silver Bracelet", "price": 5000, "description": "Stylish silver bracelet with charm pendants"},
-    ])
-    products_df.to_csv(PRODUCTS_FILE, index=False)
+    products_df = pd.DataFrame(columns=["name", "price", "description"])
 
-# --- Home redirects directly to UI ---
+# --- Root Route ---
 @app.route("/")
 def home():
-    return jsonify({"message": "✅ DeepSeek Jewellery Chatbot API is running!"})
+    return redirect("/ui")
 
-
-# --- Chat UI page (optional, for front-end use) ---
+# --- Frontend Page ---
 @app.route("/ui")
 def ui():
     return render_template("index.html")
 
-
-# --- Helper: Search Matching Jewellery Items ---
+# --- Product Search Function ---
 def search_products(query):
     query = query.lower().strip()
     matches = products_df[
-        products_df["name"].str.lower().str.contains(query)
-        | products_df["description"].str.lower().str.contains(query)
+        products_df["name"].str.lower().str.contains(query, na=False)
+        | products_df["description"].str.lower().str.contains(query, na=False)
     ]
     return matches.to_dict(orient="records")
 
-
-# --- Chat API Route ---
+# --- Chat Endpoint ---
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_message = request.json.get("message", "")
+    user_message = request.json.get("message", "").strip()
+    if not user_message:
+        return jsonify({"reply": "Please enter a product name or question.", "products": []})
 
-    # Search CSV for matching products
+    # Search in CSV file
     found_products = search_products(user_message)
 
-    # If products found, build context for AI
-    product_context = ""
-    if found_products:
-        product_context = "Here are matching jewellery products:\n" + "\n".join(
-            [f"{p['name']} (₹{p['price']}) - {p['description']}" for p in found_products]
-        )
-    else:
-        product_context = "No matching products found in the catalogue."
+    # If no matches, reply gracefully
+    if not found_products:
+        return jsonify({
+            "reply": "Sorry, I couldn’t find any matching jewellery products in our catalog.",
+            "products": []
+        })
 
-    # --- DeepSeek V3.1 Request ---
+    # Build context from CSV
+    product_context = "\n".join(
+        [f"{p['name']} - ₹{p['price']} : {p['description']}" for p in found_products]
+    )
+
+    # Prepare request to OpenRouter
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -73,15 +75,16 @@ def chat():
             {
                 "role": "system",
                 "content": (
-                    "You are an AI Jewellery Sales Assistant powered by DeepSeek V3.1 (free). "
-                    "Answer the user based only on jewellery products from the CSV. "
-                    "Do not invent new items or give unrelated suggestions. "
-                    "Give elegant, natural, sales-style replies."
+                    "You are an AI Jewellery Sales Assistant powered by DeepSeek. "
+                    "Use only the provided product details from the CSV file. "
+                    "Do not suggest products not listed. "
+                    "Be polite and descriptive, mentioning price, features, and craftsmanship."
                 ),
             },
+            {"role": "system", "content": f"Available Products:\n{product_context}"},
             {"role": "user", "content": user_message},
-            {"role": "system", "content": product_context},
         ],
+        "temperature": 0.7
     }
 
     try:
@@ -89,25 +92,26 @@ def chat():
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=30,
         )
-
         data = response.json()
-        print("DEBUG:", data)  # Render logs will show this
 
-        if "choices" in data:
+        # Parse AI reply safely
+        if "choices" in data and len(data["choices"]) > 0:
             reply = data["choices"][0]["message"]["content"]
         else:
-            reply = f"⚠️ AI Error: {data.get('error', {}).get('message', 'Unknown error')}"
+            reply = f"⚠️ AI returned no content: {data.get('error', {}).get('message', 'Unknown error')}"
     except Exception as e:
-        reply = f"❌ Error connecting to AI: {str(e)}"
+        reply = f"❌ Error connecting to AI: {e}"
 
-    return jsonify({
-        "reply": reply,
-        "products": found_products
-    })
+    return jsonify({"reply": reply, "products": found_products})
 
+# --- Health Check ---
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
 
-# --- Required for Render Deployment ---
+# --- Run App ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=True)
